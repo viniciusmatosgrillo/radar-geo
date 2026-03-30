@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GEOPOLITCS MACRO TRADING · MULTI-FONTE</title>
+<title>RADAR GEO · MULTI-FONTE</title>
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
 <style>
 :root {
@@ -257,26 +257,63 @@ header{display:flex;align-items:center;justify-content:space-between;border-bott
 
 </div>
 <script>
+<script>
 // ── RSS SOURCES ──
-// Uses rss2json.com free API as CORS proxy for RSS feeds
+// allorigins.win = CORS proxy that works from GitHub Pages
+const PROXY = 'https://api.allorigins.win/get?url=';
+
 const RSS_SOURCES = {
-  reuters:      { name:'Reuters',         url:'https://feeds.reuters.com/reuters/topNews' },
-  bbc:          { name:'BBC World',        url:'https://feeds.bbci.co.uk/news/world/rss.xml' },
-  ap:           { name:'AP News',          url:'https://rsshub.app/apnews/topics/world-news' },
-  aljazeera:    { name:'Al Jazeera',       url:'https://www.aljazeera.com/xml/rss/all.xml' },
-  cnbc:         { name:'CNBC',             url:'https://www.cnbc.com/id/100003114/device/rss/rss.html' },
-  ft:           { name:'Financial Times',  url:'https://www.ft.com/rss/home' },
-  foreignpolicy:{ name:'Foreign Policy',   url:'https://foreignpolicy.com/feed/' },
-  economist:    { name:'The Economist',    url:'https://www.economist.com/rss' },
+  reuters:      { name:'Reuters',        url:'https://feeds.reuters.com/reuters/worldNews' },
+  bbc:          { name:'BBC World',       url:'https://feeds.bbci.co.uk/news/world/rss.xml' },
+  aljazeera:    { name:'Al Jazeera',      url:'https://www.aljazeera.com/xml/rss/all.xml' },
+  cnbc:         { name:'CNBC',            url:'https://www.cnbc.com/id/100727362/device/rss/rss.html' },
+  foreignpolicy:{ name:'Foreign Policy',  url:'https://foreignpolicy.com/feed/' },
+  economist:    { name:'The Economist',   url:'https://www.economist.com/finance-and-economics/rss.xml' },
+  ap:           { name:'AP News',         url:'https://feeds.apnews.com/rss/apf-topnews' },
+  wsj:          { name:'WSJ',             url:'https://feeds.a.dj.com/rss/RSSWorldNews.xml' },
 };
 
-const RSS2JSON = 'https://api.rss2json.com/v1/api.json?rss_url=';
+async function fetchRSS(src){
+  try{
+    const r = await fetch(PROXY + encodeURIComponent(src.url), {cache:'no-store'});
+    const d = await r.json();
+    if(!d.contents) return [];
+    const xml = new DOMParser().parseFromString(d.contents, 'text/xml');
+    const items = [...xml.querySelectorAll('item')];
+    return items.map(el => {
+      const link = el.querySelector('link')?.textContent?.trim()
+                || el.querySelector('guid')?.textContent?.trim() || '';
+      const title = el.querySelector('title')?.textContent?.trim() || '';
+      return {
+        id: link || title,
+        title,
+        description: el.querySelector('description')?.textContent?.trim() || '',
+        url: link,
+        source: src.name,
+        pubDate: el.querySelector('pubDate')?.textContent || ''
+      };
+    }).filter(i => i.id && i.title);
+  }catch(e){ return []; }
+}
 
 // ── STATE ──
 let active=false, timer=null;
-let seen=new Set(), articles=[];
+// seen = Map<id, timestamp> — expires after 2h so news can re-enter if truly new cycle
+let seen=new Map(), articles=[];
 let filt='all';
 let st={total:0,proc:0,high:0,urg:0,opp:0};
+
+const SEEN_TTL = 2 * 60 * 60 * 1000; // 2 hours
+
+function isNew(id){
+  const t = seen.get(id);
+  if(!t) return true;
+  if(Date.now()-t > SEEN_TTL){ seen.delete(id); return true; }
+  return false;
+}
+function markSeen(id){ seen.set(id, Date.now()); }
+// Keep seen map from growing forever
+function pruneSeen(){ if(seen.size>1000){ const keys=[...seen.keys()]; keys.slice(0,200).forEach(k=>seen.delete(k)); } }
 
 document.querySelectorAll('.tog').forEach(b=>b.addEventListener('click',()=>b.classList.toggle('on')));
 
@@ -315,41 +352,30 @@ function setLive(on){
 
 // ── MAIN SCAN ──
 async function scan(gk,ck){
+  pruneSeen();
   const keywords=getCatKeywords();
   let allItems=[];
+  let srcOk=[], srcFail=[];
 
-  // 1. RSS sources
+  // 1. RSS sources via allorigins proxy
   const activeSrcs=[...document.querySelectorAll('#rssToggles .tog.on')].map(b=>b.dataset.rss);
   for(const srcId of activeSrcs){
     const src=RSS_SOURCES[srcId];
     if(!src) continue;
     setStatus(`📡 Buscando ${src.name}...`,'');
-    try{
-      const r=await fetch(`${RSS2JSON}${encodeURIComponent(src.url)}&count=15`);
-      const d=await r.json();
-      if(d.status==='ok' && d.items){
-        const items=d.items.map(item=>({
-          id: item.link||item.guid,
-          title: item.title,
-          description: item.description||item.content||'',
-          url: item.link,
-          source: src.name,
-          pubDate: item.pubDate
-        }));
-        allItems.push(...items);
-      }
-    }catch(e){ /* silent fail per source */ }
-    await sleep(200);
+    const items = await fetchRSS(src);
+    if(items.length){ allItems.push(...items); srcOk.push(src.name); }
+    else srcFail.push(src.name);
+    await sleep(300);
   }
 
   // 2. Guardian API
   const guardianOn=document.querySelector('#guardianToggle .tog.on');
   if(guardianOn && gk){
-    setStatus(`📡 Buscando The Guardian...`,'');
+    setStatus('📡 Buscando The Guardian...','');
     try{
-      const secs=[...document.querySelectorAll('#secToggles .tog.on')].map(b=>b.dataset.sec).join('|');
       const q=keywords.slice(0,2).join(' OR ');
-      const url=`https://content.guardianapis.com/search?q=${encodeURIComponent(q)}&section=${secs||'world'}&order-by=newest&page-size=15&show-fields=trailText&api-key=${gk}`;
+      const url=`https://content.guardianapis.com/search?q=${encodeURIComponent(q)}&section=world|business|politics&order-by=newest&page-size=20&show-fields=trailText&api-key=${gk}`;
       const r=await fetch(url);
       const d=await r.json();
       if(d.response?.status==='ok'){
@@ -362,29 +388,35 @@ async function scan(gk,ck){
           pubDate: a.webPublicationDate
         }));
         allItems.push(...items);
+        srcOk.push('The Guardian');
       }
-    }catch(e){ /* silent */ }
+    }catch(e){ srcFail.push('The Guardian'); }
   }
 
-  // 3. Filter fresh + keyword match
+  // 3. Filter: new + keyword relevant
   const fresh=allItems.filter(item=>{
-    if(!item.id || seen.has(item.id)) return false;
-    if(!item.title) return false;
+    if(!item.id||!item.title) return false;
+    if(!isNew(item.id)) return false;
+    if(keywords.length===0) return true;
     const text=(item.title+' '+item.description).toLowerCase();
-    return keywords.some(kw=>kw.split(' ').some(w=>text.includes(w.toLowerCase())));
+    return keywords.some(kw=>
+      kw.split(' ').filter(w=>w.length>3).some(w=>text.includes(w.toLowerCase()))
+    );
   });
 
   st.total+=fresh.length; updateStats();
+  fresh.forEach(i=>markSeen(i.id));
+
+  const srcSummary = srcOk.length ? `Fontes ativas: ${srcOk.join(', ')}` : 'Nenhuma fonte respondeu';
+  if(srcFail.length) console.warn('Falhou:', srcFail.join(', '));
 
   if(!fresh.length){
-    setStatus(`✓ Nenhuma notícia nova. Próxima varredura em ${fmtInterval(document.getElementById('interval').value)}`,now());
+    setStatus(`✓ Nenhuma notícia nova. ${srcSummary}. Próxima em ${fmtInterval(document.getElementById('interval').value)}`,now());
     return;
   }
 
-  fresh.forEach(i=>seen.add(i.id));
-
-  // 4. Claude analysis (test key first)
-  setStatus(`⚡ ${fresh.length} notícias novas — verificando Claude API...`,'');
+  // 4. Test Claude key once
+  setStatus(`⚡ ${fresh.length} notícias novas de ${srcOk.length} fontes — analisando com IA...`,'');
   try{
     const test=await fetch('https://api.anthropic.com/v1/messages',{
       method:'POST',
@@ -399,19 +431,19 @@ async function scan(gk,ck){
   const toProcess=fresh.slice(0,10);
   for(let i=0;i<toProcess.length;i++){
     const item=toProcess[i];
-    setStatus(`🤖 [${item.source}] Analisando ${i+1}/${toProcess.length}: ${item.title.substring(0,48)}...`,'');
+    setStatus(`🤖 [${item.source}] ${i+1}/${toProcess.length}: ${item.title.substring(0,50)}...`,'');
     const analysis=await analyzeArticle(item,ck);
     if(analysis){
       articles.unshift({raw:item,analysis,ts:Date.now()});
       st.proc++;
-      if(analysis.scores.risco>=7) st.high++;
-      if(analysis.scores.urgencia>=7) st.urg++;
-      if(analysis.scores.oportunidade>=7) st.opp++;
+      if(analysis.scores.risco>=7)       st.high++;
+      if(analysis.scores.urgencia>=7)    st.urg++;
+      if(analysis.scores.oportunidade>=7)st.opp++;
       updateStats(); renderFeed();
     }
     await sleep(600);
   }
-  setStatus(`✓ Varredura completa — ${toProcess.length} analisadas de ${fresh.length} fontes · próxima em ${fmtInterval(document.getElementById('interval').value)}`,now());
+  setStatus(`✓ Concluído — ${st.proc} analisadas · ${srcOk.join(' · ')} · próxima em ${fmtInterval(document.getElementById('interval').value)}`,now());
 }
 
 function getCatKeywords(){
