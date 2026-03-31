@@ -367,7 +367,7 @@ const COUNTRY_COORDS = {
 };
 
 // ══════════════════════════════════════════════
-// RSS SOURCES + MULTI-PROXY FALLBACK
+// RSS — PARALLEL FETCH, SHORT TIMEOUT
 // ══════════════════════════════════════════════
 const RSS_SOURCES = {
   reuters:      { name:'Reuters',       url:'https://feeds.reuters.com/reuters/worldNews' },
@@ -380,67 +380,55 @@ const RSS_SOURCES = {
   wsj:          { name:'WSJ',            url:'https://feeds.a.dj.com/rss/RSSWorldNews.xml' },
 };
 
-// Proxies tried in order per source — different sources work better with different proxies
-const PROXY_FNS = [
-  u => `https://api.allorigins.win/get?url=${encodeURIComponent(u)}`,
-  u => `https://corsproxy.io/?${encodeURIComponent(u)}`,
-  u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
-  u => `https://thingproxy.freeboard.io/fetch/${u}`,
-];
+// Race all proxies simultaneously — first valid response wins
+async function fetchRSS(src) {
+  const proxies = [
+    `https://api.allorigins.win/get?url=${encodeURIComponent(src.url)}`,
+    `https://corsproxy.io/?${encodeURIComponent(src.url)}`,
+    `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(src.url)}`,
+    `https://thingproxy.freeboard.io/fetch/${src.url}`,
+  ];
+
+  // Fire all proxies at once, take the first one that returns valid XML
+  const results = await Promise.allSettled(
+    proxies.map(url =>
+      fetch(url, { cache:'no-store', signal: AbortSignal.timeout(7000) })
+        .then(r => { if (!r.ok) throw new Error('bad status'); return r.text(); })
+        .then(raw => {
+          let xml = raw;
+          try { const j=JSON.parse(raw); if(j.contents) xml=j.contents; } catch(e){}
+          if (!xml.includes('<item') && !xml.includes('<entry')) throw new Error('no items');
+          const items = parseXMLItems(xml, src.name);
+          if (!items || !items.length) throw new Error('empty');
+          return items;
+        })
+    )
+  );
+
+  for (const r of results) {
+    if (r.status === 'fulfilled' && r.value.length > 0) return r.value;
+  }
+  return [];
+}
 
 function parseXMLItems(xmlText, srcName) {
   try {
     const xml = new DOMParser().parseFromString(xmlText, 'application/xml');
-    // Try both <item> (RSS) and <entry> (Atom)
     const els = [...xml.querySelectorAll('item'), ...xml.querySelectorAll('entry')];
     if (!els.length) return null;
     return els.map(el => {
-      // link: try <link> text, then href attribute, then <guid>
       const linkEl = el.querySelector('link');
-      const link = linkEl?.textContent?.trim()
-                || linkEl?.getAttribute('href')?.trim()
+      const link = linkEl?.textContent?.trim() || linkEl?.getAttribute('href')?.trim()
                 || el.querySelector('guid')?.textContent?.trim() || '';
       const title = el.querySelector('title')?.textContent?.trim() || '';
-      // description: try multiple fields
-      const desc = el.querySelector('description')?.textContent?.trim()
-                || el.querySelector('summary')?.textContent?.trim()
-                || el.querySelector('content')?.textContent?.trim() || '';
+      const desc  = el.querySelector('description')?.textContent?.trim()
+                 || el.querySelector('summary')?.textContent?.trim()
+                 || el.querySelector('content')?.textContent?.trim() || '';
       const pubDate = el.querySelector('pubDate')?.textContent
-                   || el.querySelector('published')?.textContent
-                   || el.querySelector('updated')?.textContent || '';
-      return { id: link||title, title, description: desc, url: link, source: srcName, pubDate };
+                   || el.querySelector('published')?.textContent || '';
+      return { id:link||title, title, description:desc, url:link, source:srcName, pubDate };
     }).filter(i => i.id && i.title.length > 5);
   } catch(e) { return null; }
-}
-
-async function fetchRSS(src) {
-  for (const makeProxy of PROXY_FNS) {
-    try {
-      const proxyUrl = makeProxy(src.url);
-      const res = await fetch(proxyUrl, {
-        cache: 'no-store',
-        signal: AbortSignal.timeout(9000)
-      });
-      if (!res.ok) continue;
-      const raw = await res.text();
-      if (!raw || raw.length < 100) continue;
-
-      // allorigins wraps response in JSON {contents, status}
-      let xmlText = raw;
-      try {
-        const j = JSON.parse(raw);
-        if (j.contents) xmlText = j.contents;
-        else if (typeof j === 'string') xmlText = j;
-      } catch(e) { /* not JSON, treat as raw XML */ }
-
-      // Verify it looks like XML feed
-      if (!xmlText.includes('<item') && !xmlText.includes('<entry')) continue;
-
-      const items = parseXMLItems(xmlText, src.name);
-      if (items && items.length > 0) return items;
-    } catch(e) { /* try next proxy */ }
-  }
-  return [];
 }
 
 
@@ -533,17 +521,24 @@ async function scan(gk, ck) {
   const keywords = getKeywords();
   let allItems = [], srcOk = [], srcFail = [];
 
-  // 1. RSS with multi-proxy fallback
+  // 1. Fetch ALL RSS sources in parallel — much faster, no sequential bottleneck
   const activeRss = [...document.querySelectorAll('#rssToggles .tog.on')].map(b => b.dataset.id);
-  for (const id of activeRss) {
-    const src = RSS_SOURCES[id];
-    if (!src) continue;
-    setStatus(`📡 Buscando ${src.name}...`, '');
-    const items = await fetchRSS(src);
-    if (items.length) { allItems.push(...items); srcOk.push(src.name); }
-    else srcFail.push(src.name);
-    await sleep(200);
-  }
+  setStatus(`📡 Buscando ${activeRss.length} fontes em paralelo...`, '');
+
+  const rssResults = await Promise.allSettled(
+    activeRss.map(id => {
+      const src = RSS_SOURCES[id];
+      return src ? fetchRSS(src).then(items => ({ src, items })) : Promise.resolve({ src:null, items:[] });
+    })
+  );
+
+  rssResults.forEach(r => {
+    if (r.status === 'fulfilled' && r.value.src) {
+      const { src, items } = r.value;
+      if (items.length) { allItems.push(...items); srcOk.push(src.name); }
+      else srcFail.push(src.name);
+    }
+  });
 
   // 2. Guardian
   const guardianOn = document.querySelector('#guardianToggle .tog.on');
@@ -851,13 +846,23 @@ function renderMapPins() {
     const g2 = document.createElementNS('http://www.w3.org/2000/svg','g');
     g2.setAttribute('class','map-pin');
     g2.setAttribute('transform',`translate(${x},${y})`);
-    g2.style.cursor = 'pointer';
 
+    // 1. HITBOX FIRST — transparent, large, captures all mouse events
+    // Must be first in SVG so it renders on top and intercepts events
+    const hitbox = document.createElementNS('http://www.w3.org/2000/svg','circle');
+    hitbox.setAttribute('r','16');
+    hitbox.setAttribute('fill','rgba(0,0,0,0.001)'); // near-transparent but not none (none ignores pointer events)
+    hitbox.setAttribute('stroke','none');
+    hitbox.style.cursor = 'pointer';
+    g2.appendChild(hitbox);
+
+    // 2. Visual elements — pointer-events:none so only hitbox receives events
     // Pulse ring
     const ring = document.createElementNS('http://www.w3.org/2000/svg','circle');
-    ring.setAttribute('r','10'); ring.setAttribute('fill','none');
+    ring.setAttribute('r','11'); ring.setAttribute('fill','none');
     ring.setAttribute('stroke',color); ring.setAttribute('stroke-width','1.5');
     ring.setAttribute('opacity','0.5'); ring.setAttribute('class','pin-ring');
+    ring.style.pointerEvents = 'none';
     g2.appendChild(ring);
 
     // Main dot
@@ -865,6 +870,7 @@ function renderMapPins() {
     dot.setAttribute('r', count > 1 ? '7' : '5');
     dot.setAttribute('fill',color); dot.setAttribute('opacity','0.9');
     dot.setAttribute('class','pin-circle');
+    dot.style.pointerEvents = 'none';
     g2.appendChild(dot);
 
     // Count badge
@@ -873,38 +879,30 @@ function renderMapPins() {
       txt.setAttribute('text-anchor','middle'); txt.setAttribute('dy','4');
       txt.setAttribute('font-size','8'); txt.setAttribute('font-family','Space Mono,monospace');
       txt.setAttribute('font-weight','bold'); txt.setAttribute('fill','#06090f');
+      txt.style.pointerEvents = 'none';
       txt.textContent = count;
       g2.appendChild(txt);
     }
 
     // Country label
     const lbl = document.createElementNS('http://www.w3.org/2000/svg','text');
-    lbl.setAttribute('text-anchor','middle'); lbl.setAttribute('dy','-10');
+    lbl.setAttribute('text-anchor','middle'); lbl.setAttribute('dy','-12');
     lbl.setAttribute('font-size','9'); lbl.setAttribute('font-family','Space Mono,monospace');
-    lbl.setAttribute('fill',color); lbl.setAttribute('opacity','0.8');
+    lbl.setAttribute('fill',color); lbl.setAttribute('opacity','0.85');
+    lbl.style.pointerEvents = 'none';
     lbl.textContent = country;
     g2.appendChild(lbl);
 
-    // LARGE INVISIBLE HITBOX — prevents flickering by giving mouse a stable target
-    const hitbox = document.createElementNS('http://www.w3.org/2000/svg','circle');
-    hitbox.setAttribute('r','14');
-    hitbox.setAttribute('fill','transparent');
-    hitbox.setAttribute('stroke','none');
-    g2.appendChild(hitbox);
-
-    // Hover events
-    g2.addEventListener('mouseenter', (e) => showMapTooltip(e, items, country));
-    g2.addEventListener('mousemove', (e) => moveMapTooltip(e));
-    g2.addEventListener('mouseleave', () => hideMapTooltip());
-    g2.addEventListener('click', () => {
-      // Switch to feed and highlight articles for this country
-      switchTabDirect('feed');
-      highlightCountryArticles(country);
-    });
+    // 3. Events on hitbox only — stable, no flickering
+    hitbox.addEventListener('mouseenter', (e) => showMapTooltip(e, items, country));
+    hitbox.addEventListener('mousemove',  (e) => moveMapTooltip(e));
+    hitbox.addEventListener('mouseleave', ()  => hideMapTooltip());
+    hitbox.addEventListener('click', () => { switchTabDirect('feed'); highlightCountryArticles(country); });
 
     pinsG.appendChild(g2);
   });
 }
+
 
 function renderCountryHighlights() {
   // Reset all country colors
