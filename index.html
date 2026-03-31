@@ -380,45 +380,69 @@ const RSS_SOURCES = {
   wsj:          { name:'WSJ',            url:'https://feeds.a.dj.com/rss/RSSWorldNews.xml' },
 };
 
-// Three proxies in cascade — first that works wins
-const PROXIES = [
-  url => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
-  url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
-  url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
+// Proxies tried in order per source — different sources work better with different proxies
+const PROXY_FNS = [
+  u => `https://api.allorigins.win/get?url=${encodeURIComponent(u)}`,
+  u => `https://corsproxy.io/?${encodeURIComponent(u)}`,
+  u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+  u => `https://thingproxy.freeboard.io/fetch/${u}`,
 ];
 
+function parseXMLItems(xmlText, srcName) {
+  try {
+    const xml = new DOMParser().parseFromString(xmlText, 'application/xml');
+    // Try both <item> (RSS) and <entry> (Atom)
+    const els = [...xml.querySelectorAll('item'), ...xml.querySelectorAll('entry')];
+    if (!els.length) return null;
+    return els.map(el => {
+      // link: try <link> text, then href attribute, then <guid>
+      const linkEl = el.querySelector('link');
+      const link = linkEl?.textContent?.trim()
+                || linkEl?.getAttribute('href')?.trim()
+                || el.querySelector('guid')?.textContent?.trim() || '';
+      const title = el.querySelector('title')?.textContent?.trim() || '';
+      // description: try multiple fields
+      const desc = el.querySelector('description')?.textContent?.trim()
+                || el.querySelector('summary')?.textContent?.trim()
+                || el.querySelector('content')?.textContent?.trim() || '';
+      const pubDate = el.querySelector('pubDate')?.textContent
+                   || el.querySelector('published')?.textContent
+                   || el.querySelector('updated')?.textContent || '';
+      return { id: link||title, title, description: desc, url: link, source: srcName, pubDate };
+    }).filter(i => i.id && i.title.length > 5);
+  } catch(e) { return null; }
+}
+
 async function fetchRSS(src) {
-  for (const makeProxy of PROXIES) {
+  for (const makeProxy of PROXY_FNS) {
     try {
       const proxyUrl = makeProxy(src.url);
-      const res = await fetch(proxyUrl, { cache: 'no-store', signal: AbortSignal.timeout(8000) });
+      const res = await fetch(proxyUrl, {
+        cache: 'no-store',
+        signal: AbortSignal.timeout(9000)
+      });
       if (!res.ok) continue;
       const raw = await res.text();
+      if (!raw || raw.length < 100) continue;
 
-      // allorigins wraps in JSON; others return raw XML
+      // allorigins wraps response in JSON {contents, status}
       let xmlText = raw;
       try {
         const j = JSON.parse(raw);
         if (j.contents) xmlText = j.contents;
-      } catch(e) { /* raw XML, fine */ }
+        else if (typeof j === 'string') xmlText = j;
+      } catch(e) { /* not JSON, treat as raw XML */ }
 
-      if (!xmlText.includes('<item>') && !xmlText.includes('<item ')) continue;
+      // Verify it looks like XML feed
+      if (!xmlText.includes('<item') && !xmlText.includes('<entry')) continue;
 
-      const xml = new DOMParser().parseFromString(xmlText, 'text/xml');
-      const items = [...xml.querySelectorAll('item')];
-      if (!items.length) continue;
-
-      return items.map(el => {
-        const link = el.querySelector('link')?.textContent?.trim()
-                  || el.querySelector('guid')?.textContent?.trim() || '';
-        const title = el.querySelector('title')?.textContent?.trim() || '';
-        const desc  = el.querySelector('description')?.textContent?.trim() || '';
-        return { id: link||title, title, description: desc, url: link, source: src.name, pubDate: el.querySelector('pubDate')?.textContent||'' };
-      }).filter(i => i.id && i.title.length > 5);
-    } catch(e) { continue; }
+      const items = parseXMLItems(xmlText, src.name);
+      if (items && items.length > 0) return items;
+    } catch(e) { /* try next proxy */ }
   }
   return [];
 }
+
 
 // ══════════════════════════════════════════════
 // STATE
@@ -861,6 +885,13 @@ function renderMapPins() {
     lbl.textContent = country;
     g2.appendChild(lbl);
 
+    // LARGE INVISIBLE HITBOX — prevents flickering by giving mouse a stable target
+    const hitbox = document.createElementNS('http://www.w3.org/2000/svg','circle');
+    hitbox.setAttribute('r','14');
+    hitbox.setAttribute('fill','transparent');
+    hitbox.setAttribute('stroke','none');
+    g2.appendChild(hitbox);
+
     // Hover events
     g2.addEventListener('mouseenter', (e) => showMapTooltip(e, items, country));
     g2.addEventListener('mousemove', (e) => moveMapTooltip(e));
@@ -940,8 +971,25 @@ function highlightCountryArticles(country) {
 }
 
 function mapZoom(factor, e) {
-  mapScale = Math.min(Math.max(mapScale * factor, 1.0), 8);
+  const svg = document.querySelector('#mapContainer svg');
+  const newScale = Math.min(Math.max(mapScale * factor, 1.0), 8);
+  if (e && svg) {
+    // Get mouse position relative to SVG element
+    const rect = svg.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+    // SVG viewBox dimensions
+    const svgW = rect.width, svgH = rect.height;
+    // Point in SVG coords before zoom
+    const svgMouseX = (mouseX / svgW) * 960;
+    const svgMouseY = (mouseY / svgH) * 500;
+    // Adjust translation so the point under cursor stays fixed
+    mapTx = svgMouseX - (svgMouseX - mapTx) * (newScale / mapScale);
+    mapTy = svgMouseY - (svgMouseY - mapTy) * (newScale / mapScale);
+  }
+  mapScale = newScale;
   applyMapTransform();
+
 }
 
 function mapReset() { mapScale=1; mapTx=0; mapTy=0; applyMapTransform(); }
