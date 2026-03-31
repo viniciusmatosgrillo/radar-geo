@@ -116,7 +116,7 @@ header{display:flex;align-items:center;justify-content:space-between;border-bott
 @keyframes ringExpand{0%{r:8;opacity:0.8}100%{r:16;opacity:0}}
 
 /* MAP TOOLTIP */
-.map-tooltip{position:fixed;background:var(--s1);border:1px solid var(--border);border-radius:4px;padding:12px 16px;max-width:320px;font-size:12px;line-height:1.6;z-index:1000;pointer-events:none;display:none;box-shadow:0 8px 32px rgba(0,0,0,0.5);}
+.map-tooltip{position:fixed;background:var(--s1);border:1px solid var(--border);border-radius:4px;padding:12px 16px;max-width:320px;font-size:12px;line-height:1.6;z-index:1000;pointer-events:none!important;display:none;box-shadow:0 8px 32px rgba(0,0,0,0.5);}
 .tt-source{font-family:'Space Mono',monospace;font-size:9px;color:var(--purple);margin-bottom:4px;}
 .tt-title{font-size:13px;font-weight:500;color:var(--text);margin-bottom:6px;line-height:1.4;}
 .tt-scores{display:flex;gap:12px;margin-bottom:6px;}
@@ -883,7 +883,10 @@ function renderCountryHighlights() {
   // This needs country id mapping — simplified: just use pins
 }
 
+let tooltipHideTimer = null;
+
 function showMapTooltip(e, items, country) {
+  if (tooltipHideTimer) { clearTimeout(tooltipHideTimer); tooltipHideTimer = null; }
   const tt = document.getElementById('mapTooltip');
   const top = items[0];
   const r = top.analysis.scores.risco;
@@ -900,18 +903,28 @@ function showMapTooltip(e, items, country) {
     ${items.length>1?`<div style="color:var(--muted2);font-size:11px;margin-top:4px;">+${items.length-1} notícia(s) relacionadas</div>`:''}
     <div class="tt-hint">▶ Clique para ver análise completa</div>`;
   tt.style.display = 'block';
-  moveMapTooltip(e);
+  moveTooltipPos(e);
 }
 
 function moveMapTooltip(e) {
+  if (tooltipHideTimer) { clearTimeout(tooltipHideTimer); tooltipHideTimer = null; }
+  moveTooltipPos(e);
+}
+
+function moveTooltipPos(e) {
   const tt = document.getElementById('mapTooltip');
-  const x = e.clientX + 16, y = e.clientY - 10;
-  const maxX = window.innerWidth - 340, maxY = window.innerHeight - 200;
+  const x = e.clientX + 20, y = e.clientY + 20;
+  const maxX = window.innerWidth - 350, maxY = window.innerHeight - 260;
   tt.style.left = Math.min(x, maxX) + 'px';
   tt.style.top  = Math.min(y, maxY) + 'px';
 }
 
-function hideMapTooltip() { document.getElementById('mapTooltip').style.display='none'; }
+function hideMapTooltip() {
+  tooltipHideTimer = setTimeout(() => {
+    document.getElementById('mapTooltip').style.display = 'none';
+    tooltipHideTimer = null;
+  }, 150);
+}
 
 function switchTabDirect(name) {
   document.querySelectorAll('.tab').forEach((t,i)=>{
@@ -927,7 +940,7 @@ function highlightCountryArticles(country) {
 }
 
 function mapZoom(factor, e) {
-  mapScale = Math.min(Math.max(mapScale * factor, 0.5), 8);
+  mapScale = Math.min(Math.max(mapScale * factor, 1.0), 8);
   applyMapTransform();
 }
 
