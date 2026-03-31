@@ -367,70 +367,75 @@ const COUNTRY_COORDS = {
 };
 
 // ══════════════════════════════════════════════
-// RSS — PARALLEL FETCH, SHORT TIMEOUT
+// RSS via rss2json.com API (free, no CORS issues)
+// Each source tried directly — rss2json is a proper RSS-to-JSON service
 // ══════════════════════════════════════════════
+const RSS2JSON = 'https://api.rss2json.com/v1/api.json?rss_url=';
+
 const RSS_SOURCES = {
-  reuters:      { name:'Reuters',       url:'https://feeds.reuters.com/reuters/worldNews' },
-  bbc:          { name:'BBC World',      url:'https://feeds.bbci.co.uk/news/world/rss.xml' },
-  ap:           { name:'AP News',        url:'https://feeds.apnews.com/rss/apf-topnews' },
-  aljazeera:    { name:'Al Jazeera',     url:'https://www.aljazeera.com/xml/rss/all.xml' },
-  cnbc:         { name:'CNBC',           url:'https://www.cnbc.com/id/100727362/device/rss/rss.html' },
-  foreignpolicy:{ name:'Foreign Policy', url:'https://foreignpolicy.com/feed/' },
-  economist:    { name:'The Economist',  url:'https://www.economist.com/finance-and-economics/rss.xml' },
-  wsj:          { name:'WSJ',            url:'https://feeds.a.dj.com/rss/RSSWorldNews.xml' },
+  reuters:      { name:'Reuters',        url:'https://feeds.reuters.com/reuters/worldNews' },
+  bbc:          { name:'BBC World',       url:'https://feeds.bbci.co.uk/news/world/rss.xml' },
+  ap:           { name:'AP News',         url:'https://feeds.apnews.com/rss/apf-topnews' },
+  aljazeera:    { name:'Al Jazeera',      url:'https://www.aljazeera.com/xml/rss/all.xml' },
+  cnbc:         { name:'CNBC',            url:'https://www.cnbc.com/id/100727362/device/rss/rss.html' },
+  foreignpolicy:{ name:'Foreign Policy',  url:'https://foreignpolicy.com/feed/' },
+  economist:    { name:'The Economist',   url:'https://www.economist.com/finance-and-economics/rss.xml' },
+  wsj:          { name:'WSJ',             url:'https://feeds.a.dj.com/rss/RSSWorldNews.xml' },
 };
 
-// Race all proxies simultaneously — first valid response wins
 async function fetchRSS(src) {
-  const proxies = [
-    `https://api.allorigins.win/get?url=${encodeURIComponent(src.url)}`,
-    `https://corsproxy.io/?${encodeURIComponent(src.url)}`,
-    `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(src.url)}`,
-    `https://thingproxy.freeboard.io/fetch/${src.url}`,
-  ];
+  // Try rss2json first (most reliable for browsers)
+  try {
+    const r = await fetch(
+      `${RSS2JSON}${encodeURIComponent(src.url)}&count=20`,
+      { signal: AbortSignal.timeout(8000) }
+    );
+    if (r.ok) {
+      const d = await r.json();
+      if (d.status === 'ok' && d.items?.length) {
+        return d.items.map(i => ({
+          id:          i.guid || i.link || i.title,
+          title:       i.title || '',
+          description: i.description || i.content || '',
+          url:         i.link || '',
+          source:      src.name,
+          pubDate:     i.pubDate || ''
+        })).filter(i => i.id && i.title.length > 5);
+      }
+    }
+  } catch(e) {}
 
-  // Fire all proxies at once, take the first one that returns valid XML
-  const results = await Promise.allSettled(
-    proxies.map(url =>
-      fetch(url, { cache:'no-store', signal: AbortSignal.timeout(7000) })
-        .then(r => { if (!r.ok) throw new Error('bad status'); return r.text(); })
-        .then(raw => {
-          let xml = raw;
-          try { const j=JSON.parse(raw); if(j.contents) xml=j.contents; } catch(e){}
-          if (!xml.includes('<item') && !xml.includes('<entry')) throw new Error('no items');
-          const items = parseXMLItems(xml, src.name);
-          if (!items || !items.length) throw new Error('empty');
-          return items;
-        })
-    )
-  );
+  // Fallback: allorigins proxy with XML parse
+  try {
+    const r = await fetch(
+      `https://api.allorigins.win/get?url=${encodeURIComponent(src.url)}`,
+      { signal: AbortSignal.timeout(8000) }
+    );
+    if (r.ok) {
+      const d = await r.json();
+      const xml = d.contents || '';
+      if (xml.includes('<item') || xml.includes('<entry')) {
+        return parseXMLItems(xml, src.name) || [];
+      }
+    }
+  } catch(e) {}
 
-  for (const r of results) {
-    if (r.status === 'fulfilled' && r.value.length > 0) return r.value;
-  }
   return [];
 }
 
 function parseXMLItems(xmlText, srcName) {
   try {
-    const xml = new DOMParser().parseFromString(xmlText, 'application/xml');
-    const els = [...xml.querySelectorAll('item'), ...xml.querySelectorAll('entry')];
-    if (!els.length) return null;
+    const doc = new DOMParser().parseFromString(xmlText, 'application/xml');
+    const els = [...doc.querySelectorAll('item'), ...doc.querySelectorAll('entry')];
     return els.map(el => {
       const linkEl = el.querySelector('link');
-      const link = linkEl?.textContent?.trim() || linkEl?.getAttribute('href')?.trim()
-                || el.querySelector('guid')?.textContent?.trim() || '';
+      const link = linkEl?.textContent?.trim() || linkEl?.getAttribute('href') || el.querySelector('guid')?.textContent?.trim() || '';
       const title = el.querySelector('title')?.textContent?.trim() || '';
-      const desc  = el.querySelector('description')?.textContent?.trim()
-                 || el.querySelector('summary')?.textContent?.trim()
-                 || el.querySelector('content')?.textContent?.trim() || '';
-      const pubDate = el.querySelector('pubDate')?.textContent
-                   || el.querySelector('published')?.textContent || '';
-      return { id:link||title, title, description:desc, url:link, source:srcName, pubDate };
+      const desc = el.querySelector('description')?.textContent?.trim() || el.querySelector('summary')?.textContent?.trim() || '';
+      return { id:link||title, title, description:desc, url:link, source:srcName, pubDate:el.querySelector('pubDate')?.textContent||'' };
     }).filter(i => i.id && i.title.length > 5);
-  } catch(e) { return null; }
+  } catch(e) { return []; }
 }
-
 
 // ══════════════════════════════════════════════
 // STATE
@@ -842,27 +847,22 @@ function renderMapPins() {
     const actualRole = items.some(i=>i.role==='epicentro') ? 'epicentro' : items.some(i=>i.role==='direto') ? 'direto' : 'secundario';
     const color = actualRole==='epicentro' ? '#ff4060' : actualRole==='direto' ? '#ffc947' : '#00e5ff';
     const count = items.length;
+    const [x, y] = proj(coord.lng, coord.lat);
+    const actualRole = items.some(i=>i.role==='epicentro') ? 'epicentro' : items.some(i=>i.role==='direto') ? 'direto' : 'secundario';
+    const color = actualRole==='epicentro' ? '#ff4060' : actualRole==='direto' ? '#ffc947' : '#00e5ff';
+    const count = items.length;
 
     const g2 = document.createElementNS('http://www.w3.org/2000/svg','g');
-    g2.setAttribute('class','map-pin');
     g2.setAttribute('transform',`translate(${x},${y})`);
+    g2.setAttribute('style','cursor:pointer');
 
-    // 1. HITBOX FIRST — transparent, large, captures all mouse events
-    // Must be first in SVG so it renders on top and intercepts events
-    const hitbox = document.createElementNS('http://www.w3.org/2000/svg','circle');
-    hitbox.setAttribute('r','16');
-    hitbox.setAttribute('fill','rgba(0,0,0,0.001)'); // near-transparent but not none (none ignores pointer events)
-    hitbox.setAttribute('stroke','none');
-    hitbox.style.cursor = 'pointer';
-    g2.appendChild(hitbox);
-
-    // 2. Visual elements — pointer-events:none so only hitbox receives events
+    // Visual elements first (will be under hitbox in z-order)
     // Pulse ring
     const ring = document.createElementNS('http://www.w3.org/2000/svg','circle');
     ring.setAttribute('r','11'); ring.setAttribute('fill','none');
     ring.setAttribute('stroke',color); ring.setAttribute('stroke-width','1.5');
     ring.setAttribute('opacity','0.5'); ring.setAttribute('class','pin-ring');
-    ring.style.pointerEvents = 'none';
+    ring.setAttribute('pointer-events','none');
     g2.appendChild(ring);
 
     // Main dot
@@ -870,18 +870,18 @@ function renderMapPins() {
     dot.setAttribute('r', count > 1 ? '7' : '5');
     dot.setAttribute('fill',color); dot.setAttribute('opacity','0.9');
     dot.setAttribute('class','pin-circle');
-    dot.style.pointerEvents = 'none';
+    dot.setAttribute('pointer-events','none');
     g2.appendChild(dot);
 
     // Count badge
     if (count > 1) {
-      const txt = document.createElementNS('http://www.w3.org/2000/svg','text');
-      txt.setAttribute('text-anchor','middle'); txt.setAttribute('dy','4');
-      txt.setAttribute('font-size','8'); txt.setAttribute('font-family','Space Mono,monospace');
-      txt.setAttribute('font-weight','bold'); txt.setAttribute('fill','#06090f');
-      txt.style.pointerEvents = 'none';
-      txt.textContent = count;
-      g2.appendChild(txt);
+      const badge = document.createElementNS('http://www.w3.org/2000/svg','text');
+      badge.setAttribute('text-anchor','middle'); badge.setAttribute('dy','4');
+      badge.setAttribute('font-size','8'); badge.setAttribute('font-family','Space Mono,monospace');
+      badge.setAttribute('font-weight','bold'); badge.setAttribute('fill','#06090f');
+      badge.setAttribute('pointer-events','none');
+      badge.textContent = count;
+      g2.appendChild(badge);
     }
 
     // Country label
@@ -889,19 +889,28 @@ function renderMapPins() {
     lbl.setAttribute('text-anchor','middle'); lbl.setAttribute('dy','-12');
     lbl.setAttribute('font-size','9'); lbl.setAttribute('font-family','Space Mono,monospace');
     lbl.setAttribute('fill',color); lbl.setAttribute('opacity','0.85');
-    lbl.style.pointerEvents = 'none';
+    lbl.setAttribute('pointer-events','none');
     lbl.textContent = country;
     g2.appendChild(lbl);
 
-    // 3. Events on hitbox only — stable, no flickering
-    hitbox.addEventListener('mouseenter', (e) => showMapTooltip(e, items, country));
-    hitbox.addEventListener('mousemove',  (e) => moveMapTooltip(e));
-    hitbox.addEventListener('mouseleave', ()  => hideMapTooltip());
-    hitbox.addEventListener('click', () => { switchTabDirect('feed'); highlightCountryArticles(country); });
+    // HITBOX LAST — in SVG last child = highest z-order = always on top
+    // fill must not be 'none' — use near-transparent so it catches events
+    const hitbox = document.createElementNS('http://www.w3.org/2000/svg','circle');
+    hitbox.setAttribute('r','14');
+    hitbox.setAttribute('fill','rgba(255,255,255,0.01)');
+    hitbox.setAttribute('stroke','none');
+    g2.appendChild(hitbox);
+
+    // All events on the group — hitbox being last ensures it catches them
+    g2.addEventListener('mouseenter', (e) => showMapTooltip(e, items, country));
+    g2.addEventListener('mousemove',  (e) => moveMapTooltip(e));
+    g2.addEventListener('mouseleave', ()  => hideMapTooltip());
+    g2.addEventListener('click',      ()  => { switchTabDirect('feed'); highlightCountryArticles(country); });
 
     pinsG.appendChild(g2);
   });
 }
+
 
 
 function renderCountryHighlights() {
