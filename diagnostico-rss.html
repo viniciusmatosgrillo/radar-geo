@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Diagnóstico RSS</title>
+<style>
+body{background:#06090f;color:#dce8f5;font-family:monospace;padding:20px;}
+h2{color:#00e5ff;margin-bottom:20px;}
+.row{padding:8px 12px;margin:4px 0;border-radius:3px;font-size:13px;}
+.ok{background:rgba(0,224,154,0.15);color:#00e09a;}
+.fail{background:rgba(255,64,96,0.15);color:#ff4060;}
+.wait{background:rgba(255,201,71,0.1);color:#ffc947;}
+button{background:#00e5ff;color:#06090f;border:none;padding:10px 24px;font-family:monospace;font-size:14px;cursor:pointer;border-radius:3px;margin-bottom:20px;}
+#log{margin-top:20px;}
+</style>
+</head>
+<body>
+<h2>🔍 Diagnóstico de Proxies RSS</h2>
+<button onclick="runDiag()">▶ TESTAR TODOS OS PROXIES</button>
+<div id="log"></div>
+<script>
+const SOURCES = {
+  bbc:     'https://feeds.bbci.co.uk/news/world/rss.xml',
+  reuters: 'https://feeds.reuters.com/reuters/worldNews',
+  ap:      'https://feeds.apnews.com/rss/apf-topnews',
+};
+
+const PROXIES = [
+  { name:'rss2json.com',    make: u=>`https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(u)}&count=5` },
+  { name:'allorigins.win',  make: u=>`https://api.allorigins.win/get?url=${encodeURIComponent(u)}` },
+  { name:'corsproxy.io',    make: u=>`https://corsproxy.io/?${encodeURIComponent(u)}` },
+  { name:'codetabs.com',    make: u=>`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}` },
+  { name:'thingproxy',      make: u=>`https://thingproxy.freeboard.io/fetch/${u}` },
+];
+
+function log(msg, cls='wait'){
+  const d=document.getElementById('log');
+  d.innerHTML += `<div class="row ${cls}">${msg}</div>`;
+}
+
+async function testProxy(proxy, srcName, srcUrl){
+  try{
+    const url = proxy.make(srcUrl);
+    const r = await fetch(url, {signal:AbortSignal.timeout(8000)});
+    if(!r.ok) return {ok:false, reason:`HTTP ${r.status}`};
+    const text = await r.text();
+    // Check if it's JSON (rss2json) or XML
+    let itemCount = 0;
+    try{
+      const j = JSON.parse(text);
+      if(j.status==='ok' && j.items) itemCount = j.items.length;
+      else if(j.contents) itemCount = (j.contents.match(/<item/g)||[]).length;
+    }catch(e){
+      itemCount = (text.match(/<item/g)||[]).length;
+    }
+    if(itemCount > 0) return {ok:true, items:itemCount};
+    return {ok:false, reason:'0 items encontrados'};
+  }catch(e){
+    return {ok:false, reason:e.message.substring(0,40)};
+  }
+}
+
+async function runDiag(){
+  document.getElementById('log').innerHTML = '';
+  for(const [srcName, srcUrl] of Object.entries(SOURCES)){
+    log(`<strong>━━ ${srcName.toUpperCase()} ━━</strong>`);
+    for(const proxy of PROXIES){
+      log(`  ⏳ ${proxy.name} → ${srcName}...`);
+      const res = await testProxy(proxy, srcName, srcUrl);
+      const last = document.getElementById('log').lastElementChild;
+      if(res.ok){
+        last.className='row ok';
+        last.textContent = `  ✅ ${proxy.name} → ${srcName}: ${res.items} itens encontrados`;
+      } else {
+        last.className='row fail';
+        last.textContent = `  ❌ ${proxy.name} → ${srcName}: ${res.reason}`;
+      }
+    }
+  }
+  log('━━ DIAGNÓSTICO COMPLETO ━━', 'ok');
+}
+</script>
+</body>
+</html>
