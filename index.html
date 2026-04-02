@@ -317,7 +317,7 @@ header{display:flex;align-items:center;justify-content:space-between;border-bott
 </div>
 
 </div>
-<div id="mapTooltip2" style="display:none"></div>
+
 
 <script>
 const COORDS = {
@@ -877,7 +877,10 @@ function setFilter(f, el) {
 // UTILS
 // ══════════════════════════════════════════════
 function updateStats() { [st.total,st.proc,st.high,st.urg,st.opp].forEach((v,i)=>document.getElementById('st'+i).textContent=v); }
-function setStatus(t,time) { document.getElementById('statusText').textContent=t; document.getElementById('statusTime').textContent=time; }
+function setStatus(t,time) {
+  ['statusText','statusText2'].forEach(id=>{ const el=document.getElementById(id); if(el) el.textContent=t; });
+  ['statusTime','statusTime2'].forEach(id=>{ const el=document.getElementById(id); if(el) el.textContent=time; });
+}
 function showErr(m) { const b=document.getElementById('errBox'); b.innerHTML='⚠ '+m; b.classList.add('show'); }
 function clearErr() { document.getElementById('errBox').classList.remove('show'); }
 function timeAgo(ts) { const s=Math.floor((Date.now()-ts)/1000); if(s<60)return'agora'; if(s<3600)return`${Math.floor(s/60)}min atrás`; return`${Math.floor(s/3600)}h atrás`; }
@@ -885,12 +888,6 @@ function now() { return new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',mi
 function fmtMs(ms) { const m=parseInt(ms)/60000; return m>=60?`${m/60}h`:`${m}min`; }
 function sleep(ms) { return new Promise(r=>setTimeout(r,ms)); }
 
-function setStatus(t,time){
-  ['statusText','statusText2'].forEach(id=>{ const el=document.getElementById(id); if(el) el.textContent=t; });
-  ['statusTime','statusTime2'].forEach(id=>{ const el=document.getElementById(id); if(el) el.textContent=time; });
-}
-function showErr(m){ const b=document.getElementById('errBox'); b.innerHTML='⚠ '+m; b.classList.add('show'); }
-function clearErr(){ document.getElementById('errBox').classList.remove('show'); }
 </script>
 </body>
 </html>
