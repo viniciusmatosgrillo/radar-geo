@@ -491,13 +491,9 @@ async function scan(gk,ck){
   const topics=[...document.querySelectorAll('#catToggles .tog.on')].map(b=>b.dataset.q);
   setStatus(`📡 Buscando notícias (${topics.length} temas em paralelo)...`,'');
 
-  // Guardian multi-query + Claude web search for top 2 topics, all parallel
-  const [guardianItems,...searchBatches] = await Promise.all([
-    fetchGuardian(gk),
-    ...topics.slice(0,2).map(q=>fetchViaSearch(ck,q))
-  ]);
-
-  const allItems=[...guardianItems,...searchBatches.flat()];
+  // Guardian multi-query (parallel per topic) — reliable, no proxy needed
+  const guardianItems = await fetchGuardian(gk);
+  const allItems = [...guardianItems];
   const fresh=[];
   for (const i of allItems){
     if (!i.id||!i.title||seenIds.has(i.id)) continue;
@@ -558,14 +554,14 @@ Retorne SOMENTE JSON válido, sem markdown:
   "tags": ["tag1","tag2","tag3","tag4"]
 }
 
-REGRAS:
-- Se não for relevante: {"relevante":false}
-- paises_epicentro: países diretamente envolvidos no evento
-- paises_impacto_direto: vizinhos, parceiros comerciais, aliados imediatamente afetados
-- paises_impacto_secundario: países com exposição indireta (mercados, commodities, rotas)
-- cadeia_de_impacto DEVE ter 3 ordens, a 3ª contraintuitiva
-- ativos.nao_obvio é obrigatório
-- Foque em: BRL/USD, petróleo/WTI/Brent, ouro, IBOV, S&P500, setores com tickers`;
+REGRAS CRÍTICAS:
+- Marque {"relevante":false} APENAS se for artigo sobre esportes, entretenimento, celebridades ou culinária. QUALQUER notícia sobre política, economia, conflito, energia, comércio ou relações internacionais é relevante=true.
+- paises_epicentro: países diretamente envolvidos
+- paises_impacto_direto: vizinhos e parceiros comerciais afetados
+- paises_impacto_secundario: países com exposição indireta
+- cadeia_de_impacto DEVE ter 3 ordens obrigatoriamente
+- ativos.nao_obvio é obrigatório em cada ativo
+- Foque em: BRL/USD, petróleo/Brent, ouro, IBOV, S&P500, setores com tickers`;
 
 async function analyzeArticle(item, ck) {
   const content = `FONTE: ${item.source}\nTÍTULO: ${item.title}\nDESCRIÇÃO: ${item.description.replace(/<[^>]*>/g,'').substring(0,500)}\nDATA: ${item.pubDate||''}`;
@@ -576,11 +572,16 @@ async function analyzeArticle(item, ck) {
       body: JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:2000,system:SYS,messages:[{role:'user',content}]})
     });
     const data = await res.json();
-    if (!data.content) return null;
+    if (data.error) { setStatus(`⚠ Claude erro: ${data.error.message}`,''); return null; }
+    if (!data.content) { setStatus(`⚠ Sem resposta da API`,''); return null; }
     const txt = data.content.map(x=>x.text||'').join('').replace(/```json|```/g,'').trim();
-    const parsed = JSON.parse(txt);
-    return parsed.relevante ? parsed : null;
-  } catch(e) { return null; }
+    if (!txt) { setStatus(`⚠ Resposta vazia da API`,''); return null; }
+    let parsed;
+    try { parsed = JSON.parse(txt); }
+    catch(e) { setStatus(`⚠ JSON inválido: ${txt.substring(0,60)}`,''); return null; }
+    if (!parsed.relevante) return null;
+    return parsed;
+  } catch(e) { setStatus(`⚠ Erro na análise: ${e.message}`,''); return null; }
 }
 
 
