@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Debug API</title>
+<style>
+body{background:#0a0f18;color:#dce8f5;font-family:monospace;padding:20px;}
+input,textarea{width:100%;background:#111a26;border:1px solid #1c2d42;color:#dce8f5;padding:10px;margin-bottom:10px;border-radius:4px;font-family:monospace;font-size:13px;}
+button{background:#00e5ff;color:#06090f;border:none;padding:10px 24px;font-size:14px;cursor:pointer;border-radius:4px;margin-right:8px;margin-bottom:10px;}
+#out{background:#111a26;border:1px solid #1c2d42;padding:16px;border-radius:4px;white-space:pre-wrap;font-size:12px;line-height:1.6;min-height:200px;max-height:500px;overflow-y:auto;}
+.ok{color:#00e09a;} .err{color:#ff4060;} .warn{color:#ffc947;}
+</style>
+</head>
+<body>
+<h2 style="color:#00e5ff;margin-bottom:16px">🔍 Debug Claude API</h2>
+
+<label>Claude API Key:</label>
+<input type="password" id="apiKey" placeholder="sk-ant-...">
+
+<label>Teste 1 — Chamada mínima (verifica se a key funciona):</label>
+<button onclick="testMin()">Testar key</button>
+
+<label>Teste 2 — Análise de notícia real:</label>
+<button onclick="testAnalysis()">Testar análise</button>
+
+<label>Teste 3 — Ver resposta bruta JSON:</label>
+<button onclick="testRaw()">Ver JSON bruto</button>
+
+<div id="out">Clique em um dos botões acima...</div>
+
+<script>
+const log = (msg, cls='') => {
+  const out = document.getElementById('out');
+  out.innerHTML += `<span class="${cls}">${msg}</span>\n`;
+  out.scrollTop = out.scrollHeight;
+};
+const clear = () => document.getElementById('out').innerHTML = '';
+
+async function testMin() {
+  clear();
+  const ck = document.getElementById('apiKey').value.trim();
+  if (!ck) { log('❌ Insira sua API key', 'err'); return; }
+  log('Testando conexão com Claude API...');
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': ck,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 50,
+        messages: [{ role: 'user', content: 'Responda apenas: OK' }]
+      })
+    });
+    const data = await res.json();
+    log(`HTTP Status: ${res.status}`, res.ok ? 'ok' : 'err');
+    log(`Resposta completa:\n${JSON.stringify(data, null, 2)}`);
+    if (data.error) log(`❌ ERRO: ${data.error.message}`, 'err');
+    if (data.content) log(`✅ API funcionando! Resposta: ${data.content[0]?.text}`, 'ok');
+  } catch(e) {
+    log(`❌ Exceção: ${e.message}`, 'err');
+  }
+}
+
+async function testAnalysis() {
+  clear();
+  const ck = document.getElementById('apiKey').value.trim();
+  if (!ck) { log('❌ Insira sua API key', 'err'); return; }
+
+  const noticia = `FONTE: The Guardian
+TÍTULO: US and China trade tensions escalate as new tariffs announced
+DESCRIÇÃO: The United States announced new tariffs on Chinese goods, escalating trade tensions between the world's two largest economies.
+DATA: 2025-04-06`;
+
+  const sys = `Você é um analista macro. Analise a notícia e retorne SOMENTE JSON:
+{"relevante":true,"categoria":"Comércio","scores":{"risco":8,"urgencia":7,"oportunidade":5},"resumo":"Teste","paises_epicentro":["USA","China"],"paises_impacto_direto":["Brazil"],"paises_impacto_secundario":["Germany"],"cadeia_de_impacto":[{"ordem":1,"descricao":"teste1"},{"ordem":2,"descricao":"teste2"},{"ordem":3,"descricao":"teste3"}],"setores":{"beneficiados":[{"setor":"teste","motivo":"teste"}],"prejudicados":[{"setor":"teste","motivo":"teste"}]},"ativos":[{"nome":"IBOV","direcao":"BAIXA","descricao":"teste","nao_obvio":"teste","confianca":"ALTA"}],"acao":"teste","historico":"teste","tags":["tag1"]}
+
+Retorne APENAS JSON válido. Nada mais.`;
+
+  log('Testando análise de notícia...\n');
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': ck,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 500,
+        system: sys,
+        messages: [{ role: 'user', content: noticia }]
+      })
+    });
+    const data = await res.json();
+    log(`HTTP: ${res.status}`, res.ok ? 'ok' : 'err');
+    if (data.error) { log(`❌ Erro API: ${data.error.message}`, 'err'); return; }
+    if (!data.content) { log('❌ data.content undefined', 'err'); log(JSON.stringify(data)); return; }
+    const txt = data.content.map(x=>x.text||'').join('');
+    log(`Texto bruto retornado:\n${txt}`, 'warn');
+    try {
+      const clean = txt.replace(/```json|```/g,'').trim();
+      const parsed = JSON.parse(clean);
+      log(`\n✅ JSON parseado com sucesso!`, 'ok');
+      log(`relevante: ${parsed.relevante}`, parsed.relevante ? 'ok' : 'err');
+      log(`categoria: ${parsed.categoria}`);
+      log(`scores: ${JSON.stringify(parsed.scores)}`);
+    } catch(e) {
+      log(`❌ Falha ao parsear JSON: ${e.message}`, 'err');
+    }
+  } catch(e) {
+    log(`❌ Exceção fetch: ${e.message}`, 'err');
+  }
+}
+
+async function testRaw() {
+  clear();
+  const ck = document.getElementById('apiKey').value.trim();
+  if (!ck) { log('❌ Insira sua API key', 'err'); return; }
+  log('Testando com prompt mínimo para ver resposta bruta...\n');
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': ck,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 100,
+        system: 'Retorne apenas: {"relevante":true,"teste":"ok"}',
+        messages: [{ role: 'user', content: 'ok' }]
+      })
+    });
+    const data = await res.json();
+    log(`Resposta completa da API:\n${JSON.stringify(data, null, 2)}`);
+    if (data.content) {
+      const txt = data.content.map(x=>x.text||'').join('');
+      log(`\nTexto extraído: "${txt}"`, 'ok');
+      try {
+        JSON.parse(txt);
+        log('✅ É JSON válido!', 'ok');
+      } catch(e) {
+        log(`❌ Não é JSON válido: ${e.message}`, 'err');
+      }
+    }
+  } catch(e) {
+    log(`❌ Exceção: ${e.message}`, 'err');
+  }
+}
+</script>
+</body>
+</html>
