@@ -523,45 +523,17 @@ async function scan(gk,ck){
   setStatus(`✓ ${st.proc} análises · Guardian + Web Search · próxima: ${fmtMs(document.getElementById('interval').value)}`,now());
 }
 
-const SYS = `Você é um analista macro sênior com 20 anos de Goldman Sachs, especializado em geopolítica, macro e equities globais.
+const SYS = `Analista macro sênior Goldman Sachs 20 anos. Analise a notícia com impactos de 2ª e 3ª ordem.
 
-Analise o evento com profundidade de 2ª e 3ª ordem — impactos não triviais em cadeias de suprimento, setores correlacionados e dinâmicas de mercado que a maioria não enxerga imediatamente.
+Retorne SOMENTE este JSON (sem markdown, sem texto extra):
+{"relevante":true,"categoria":"Geopolítica","scores":{"risco":7,"urgencia":6,"oportunidade":4},"resumo":"2 frases técnicas sobre impacto macro.","paises_epicentro":["País"],"paises_impacto_direto":["País2"],"paises_impacto_secundario":["País3"],"cadeia_de_impacto":[{"ordem":1,"descricao":"Impacto direto"},{"ordem":2,"descricao":"Consequência não trivial"},{"ordem":3,"descricao":"Efeito sistêmico contraintuitivo"}],"setores":{"beneficiados":[{"setor":"Nome","motivo":"Mecanismo"}],"prejudicados":[{"setor":"Nome","motivo":"Canal"}]},"ativos":[{"nome":"TICKER","direcao":"ALTA","descricao":"motivo","nao_obvio":"o que mercado nao precificou","confianca":"ALTA"}],"acao":"Sinal concreto de entrada/saida ou hedge.","historico":"1 evento analogo e impacto nos mercados.","tags":["tag1","tag2","tag3"]}
 
-Retorne SOMENTE JSON válido, sem markdown:
-
-{
-  "relevante": true,
-  "categoria": "Geopolítica|Economia|Política|Energia|Comércio|Outro",
-  "scores": {"risco":1-10,"urgencia":1-10,"oportunidade":1-10},
-  "resumo": "2-3 frases do impacto macro. Técnico e específico.",
-  "paises_epicentro": ["País1","País2"],
-  "paises_impacto_direto": ["País3","País4"],
-  "paises_impacto_secundario": ["País5","País6"],
-  "cadeia_de_impacto": [
-    {"ordem":1,"descricao":"Impacto direto e imediato (o óbvio)"},
-    {"ordem":2,"descricao":"Consequência de segunda ordem — o que a maioria não considera imediatamente"},
-    {"ordem":3,"descricao":"Efeito sistêmico/estrutural de longo prazo, frequentemente contraintuitivo"}
-  ],
-  "setores": {
-    "beneficiados": [{"setor":"Nome","motivo":"Mecanismo não óbvio — feedstock, substituição, hedge, fluxo de capital"}],
-    "prejudicados":  [{"setor":"Nome","motivo":"Canal de transmissão específico"}]
-  },
-  "ativos": [
-    {"nome":"TICKER","direcao":"ALTA|BAIXA|VOLÁTIL|NEUTRO","descricao":"Impacto direto","nao_obvio":"O que o mercado ainda não precificou","confianca":"ALTA|MÉDIA|BAIXA"}
-  ],
-  "acao": "Sinal acionável: gatilho de entrada/saída, hedge específico, nível ou condição.",
-  "historico": "1-2 eventos históricos análogos com duration do impacto nos mercados.",
-  "tags": ["tag1","tag2","tag3","tag4"]
-}
-
-REGRAS CRÍTICAS:
-- Marque {"relevante":false} APENAS se for artigo sobre esportes, entretenimento, celebridades ou culinária. QUALQUER notícia sobre política, economia, conflito, energia, comércio ou relações internacionais é relevante=true.
-- paises_epicentro: países diretamente envolvidos
-- paises_impacto_direto: vizinhos e parceiros comerciais afetados
-- paises_impacto_secundario: países com exposição indireta
-- cadeia_de_impacto DEVE ter 3 ordens obrigatoriamente
-- ativos.nao_obvio é obrigatório em cada ativo
-- Foque em: BRL/USD, petróleo/Brent, ouro, IBOV, S&P500, setores com tickers`;
+Substitua os valores de exemplo pelos dados reais da noticia.
+categoria: Geopolitica, Economia, Politica, Energia, Comercio ou Outro.
+direcao: ALTA, BAIXA, VOLATIL ou NEUTRO.
+confianca: ALTA, MEDIA ou BAIXA.
+Qualquer noticia sobre politica, economia, conflito, energia ou comercio internacional: relevante=true.
+Somente esportes, entretenimento ou culinaria: {"relevante":false}`;
 
 async function analyzeArticle(item, ck) {
   const content = `FONTE: ${item.source}\nTÍTULO: ${item.title}\nDESCRIÇÃO: ${item.description.replace(/<[^>]*>/g,'').substring(0,500)}\nDATA: ${item.pubDate||''}`;
@@ -569,7 +541,7 @@ async function analyzeArticle(item, ck) {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method:'POST',
       headers:{'Content-Type':'application/json','x-api-key':ck,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body: JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:2000,system:SYS,messages:[{role:'user',content}]})
+      body: JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:4000,system:SYS,messages:[{role:'user',content}]})
     });
     const data = await res.json();
     if (data.error) { setStatus(`⚠ Claude erro: ${data.error.message}`,''); return null; }
